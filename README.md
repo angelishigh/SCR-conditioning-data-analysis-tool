@@ -10,7 +10,7 @@ Then it:
 
 - Labels each trial with **Phase** (Habituation, Acquisition, Extinction), **Stimulus** (Pain, Food, Neutral, Extra), **Block** (1–3), and **Trial_in_Phase**  
 - Saves all trials to `SCR_peaks_all.csv`  
-- Computes **per-subject averages of `SCR_sqrt`** for each Phase × Stimulus × Block combination and saves them to `SCR_peaks_all_averages.csv` (this is what you use for the mixed ANOVA).  
+- Computes **per-subject averages of `SCR_sqrt`** for each Phase × Stimulus × Block combination and saves them to `SCR_peaks_all_averages.csv` (this is what you used for mixed ANOVA).  
 
 This matches the proposal definition: SCR is “difference between onset and peak, square-root transformed and averaged per CS type and phase”. [file:316][file:314]
 
@@ -179,4 +179,4 @@ To adapt this pipeline to another conditioning experiment
 3. Update `SCR_CHANNEL` if your EDA channel has another name (e.g. `"GSR"`).  
 4. Optionally change the grouping logic in the averaging step if your block structure differs.
 ## Disclaimer
-This is a lightweight teaching/research tool meant for student projects. Always visually inspect a few participants’ data and compare against your lab’s SCR guidelines (e.g. Boucsein et al., 2012) before relying on the numbers for publication. [file:314][web:387]
+This is a lightweight teaching/research tool meant for student projects. Always visually inspect a few participants’ data and compare against your lab’s SCR guidelines before relying on the numbers for publication.
