@@ -1,0 +1,206 @@
+import os
+import glob
+import warnings
+
+import numpy as np
+import pandas as pd
+import mne
+
+warnings.filterwarnings("ignore")
+mne.set_log_level("ERROR")
+
+
+# SETTINGS ← change these two lines before running
+
+DATA_FOLDER = r"C:\SCR analysis\SCR_data"
+OUTPUT_CSV = r"C:\SCR analysis\SCR_peaks_all.csv"
+
+SCR_CHANNEL = "EDA"        # channel name as it appears in .vhdr
+LOWPASS_HZ = 5.0           # low-pass filter for SCR
+TMIN = -2.0                # epoch start (s relative to CS onset)
+TMAX = 8.0                 # epoch end (s)
+BASELINE = (-2.0, 0.0)     # baseline window (s)
+PEAK_START = 1.0           # SCR peak search window start (s)
+PEAK_END = 6.0             # SCR peak search window end (s)
+INVERT = True              # True = SCR goes DOWN in the recordings (flip it)
+# False = SCR goes UP naturally
+
+# MARKER MAP (marker value -> phase, stimulus)
+
+MARKER_MAP = {
+    104: ("Habituation", "Pain"),
+    120: ("Habituation", "Food"),
+    136: ("Habituation", "Neutral"), ## this one
+    152: ("Acquisition", "Pain"),
+    160: ("Acquisition", "Food"),
+    176: ("Acquisition", "Neutral"),
+    192: ("Extinction", "Pain"),  ## this one
+    208: ("Extinction", "Food"),
+    224: ("Extinction", "Neutral"),
+    240: ("Extinction", "Extra"),
+}
+
+def get_block(trial_0based: int) -> int:
+    # Return block number (1, 2, 3) given 0-based index within that CS type.
+    return (trial_0based // 3) + 1
+
+
+def process_participant(vhdr_path: str):
+    # Process one participant .vhdr file and return a list of trial rows.
+    subj = os.path.splitext(os.path.basename(vhdr_path))[0]
+    rows = []
+
+    # Load data
+    try:
+        raw = mne.io.read_raw_brainvision(
+            vhdr_path, preload=True, verbose=False
+        )
+    except Exception as e:
+        print(f" [ERROR] Could not load {subj}: {e}")
+        return rows
+
+    # Pick SCR channel (case-insensitive fallback)
+    match = [ch for ch in raw.ch_names if ch.upper() == SCR_CHANNEL.upper()]
+    if not match:
+        print(f" [WARN] '{SCR_CHANNEL}' not found in {subj}. Channels: {raw.ch_names}")
+        return rows
+    raw.pick_channels(match)
+
+    # Low-pass filter SCR channel
+    raw.filter(None, LOWPASS_HZ, picks=[SCR_CHANNEL],
+               fir_design="firwin", verbose=False)
+
+    # Flip if needed so SCR goes up
+    if INVERT:
+        raw._data *= -1
+
+    # Extract events from annotations
+    try:
+        events, event_dict = mne.events_from_annotations(raw, verbose=False)
+    except Exception as e:
+        print(f" [WARN] No events in {subj}: {e}")
+        return rows
+
+    # Map annotation descriptions to our marker numbers
+    code_map = {}
+    for desc, code in event_dict.items():
+        for prefix in ["Stimulus/S", "S", ""]:
+            try:
+                num = int(desc.replace(prefix, "").strip())
+                if num in MARKER_MAP:
+                    code_map[code] = num
+                    break
+            except ValueError:
+                continue
+
+    if not code_map:
+        print(f" [WARN] No CS markers matched in {subj}. Event dict: {event_dict}")
+        return rows
+
+    # Keep only CS events
+    cs_events = events[np.isin(events[:, 2], list(code_map.keys()))]
+    sfreq = raw.info["sfreq"]
+    data = raw.get_data()[0]
+
+    # Count occurrences per marker value (for Trial_in_Phase and Block)
+    occurrence = {}
+
+    for event in cs_events:
+        onset = event[0]
+        mval = code_map[event[2]]
+        phase, stimulus = MARKER_MAP[mval]
+
+        idx = occurrence.get(mval, 0)
+        occurrence[mval] = idx + 1
+        block = get_block(idx)
+
+        # Define epoch in samples
+        s0 = onset + int(TMIN * sfreq)
+        s1 = onset + int(TMAX * sfreq)
+        if s0 < 0 or s1 >= len(data):
+            continue
+
+        epoch = data[s0:s1 + 1].copy()
+        t = np.linspace(TMIN, TMAX, len(epoch))
+
+        # Baseline correction
+        bl = (t >= BASELINE[0]) & (t <= BASELINE[1])
+        epoch -= epoch[bl].mean()
+
+        # Peak in 1–6 s window
+        win = (t >= PEAK_START) & (t <= PEAK_END)
+        if not win.any():
+            continue
+
+        pi = np.argmax(epoch[win])
+
+        rows.append({
+            "Subject": subj,
+            "Phase": phase,
+            "Stimulus": stimulus,
+            "Trial_in_Phase": idx + 1,
+            "Block": block,
+            "SCR_peak_raw": round(float(epoch[win][pi]), 8),
+            "SCR_latency_s": round(float(t[win][pi]), 4),
+        })
+
+    return rows
+
+
+def main():
+    files = sorted(
+        glob.glob(os.path.join(DATA_FOLDER, "**", "*.vhdr"), recursive=True)
+    )
+
+    if not files:
+        print(f"No .vhdr files found in: {DATA_FOLDER}")
+        return
+
+    print(f"Found {len(files)} file(s).")
+    all_rows = []
+
+    for f in files:
+        subj = os.path.splitext(os.path.basename(f))[0]
+        print(f" Processing: {subj}")
+        rows = process_participant(f)
+        all_rows.extend(rows)
+        print(f" → {len(rows)} trials")
+
+    if not all_rows:
+        print("No data extracted. Check SCR_CHANNEL name and marker codes.")
+        return
+
+    # Trial-level DataFrame
+    df = pd.DataFrame(all_rows)
+
+    # Square-root transform (standard SCR normalization)
+    df["SCR_peak_nonneg"] = df["SCR_peak_raw"].clip(lower=0)
+    df["SCR_sqrt"] = np.sqrt(df["SCR_peak_nonneg"])
+
+    # Save trial-level CSV
+    df.to_csv(OUTPUT_CSV, index=False)
+    print(f"\nSaved: {OUTPUT_CSV} "
+          f"({len(df)} rows, {df['Subject'].nunique()} participants)")
+    print(df[["Subject", "Phase", "Stimulus",
+              "Block", "Trial_in_Phase", "SCR_sqrt"]]
+          .head(12).to_string())
+
+    # averages
+    # One row per Subject × Phase × Stimulus × Block
+    group_cols = ["Subject", "Phase", "Stimulus", "Block"]
+    avg_df = (
+        df.groupby(group_cols, as_index=False)
+          .agg(
+              SCR_sqrt_mean=("SCR_sqrt", "mean"),
+              SCR_sqrt_sd=("SCR_sqrt", "std"),
+              n_trials=("SCR_sqrt", "size"),
+          )
+    )
+
+    avg_csv = OUTPUT_CSV.replace(".csv", "_averages.csv")
+    avg_df.to_csv(avg_csv, index=False)
+    print(f"Saved condition averages to: {avg_csv}")
+
+
+if __name__ == "__main__":
+    main()
