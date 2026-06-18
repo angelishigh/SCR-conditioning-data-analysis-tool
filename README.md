@@ -172,7 +172,7 @@ Use this file directly for **mixed ANOVAs** with:
 (Assuming you merge in sleep group labels separately.)
 
 
-## Adapting to other experiments
+## Adapting to your own experiment
 To adapt this pipeline to another conditioning experiment
 1. Change `MARKER_MAP` to your own marker codes and labels.  
 2. Adjust `TMIN`, `TMAX`, `PEAK_START`, and `PEAK_END` if your timing differs.  
